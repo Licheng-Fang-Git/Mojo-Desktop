@@ -3,7 +3,7 @@
   "name": "Mojo Desktop Companion",
   "version": "1.0",
   "description": "Watches for distracting websites and alerts the Mojo desktop orb.",
-  "permissions": ["tabs"],
+  "permissions": ["tabs", "alarms"],
   "host_permissions": ["http://localhost:8000/*"],
   "background": {
     "service_worker": "background.js"
