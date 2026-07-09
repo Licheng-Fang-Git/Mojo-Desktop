@@ -5,6 +5,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QRadialGradient
 from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QVBoxLayout, QWidget
 
 from bridge import AlertBridge, start_server
+from llm import EvaluationBridge, evaluate_async, log_decision
 
 COLLAPSED_SIZE = QSize(50, 50)
 PANEL_SIZE = QSize(320, 220)
@@ -54,7 +55,10 @@ class ChatPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.resize(PANEL_SIZE)
 
-        # Placeholder chat view for now — no LLM wired up until Milestone 4.
+        self.current_site = None
+        self.evaluation_bridge = EvaluationBridge()
+        self.evaluation_bridge.evaluation_done.connect(self._on_evaluation_done)
+
         self.message_label = QLabel("What are you doing here?")
         self.message_label.setWordWrap(True)
         self.message_label.setStyleSheet("color: white; background: transparent; font-size: 13px;")
@@ -73,9 +77,24 @@ class ChatPanel(QWidget):
         layout.addStretch()
         layout.addWidget(self.input_line)
 
+    def show_alert(self, site, message):
+        self.current_site = site
+        self.message_label.setText(message or f"Distraction detected: {site}")
+
     def _on_submit(self):
-        # Stub for now — Milestone 4 will send this to the LLM for evaluation.
+        reason = self.input_line.text().strip()
+        if not reason or not self.current_site:
+            return
+
         self.input_line.clear()
+        self.input_line.setEnabled(False)
+        self.message_label.setText("Thinking...")
+        evaluate_async(self.current_site, reason, self.evaluation_bridge)
+
+    def _on_evaluation_done(self, site, reason, decision):
+        self.input_line.setEnabled(True)
+        self.message_label.setText(decision.get("response", "..."))
+        log_decision(site, reason, decision)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -115,7 +134,7 @@ class Orb(QWidget):
         self.server = start_server(self.bridge)
 
     def _on_alert(self, site, message):
-        self.chat_panel.message_label.setText(message or f"Distraction detected: {site}")
+        self.chat_panel.show_alert(site, message)
         self._position_chat_panel()
         self.chat_panel.show()
 
