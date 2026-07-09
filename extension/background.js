@@ -5,12 +5,12 @@ const BLACKLIST = ["youtube.com", "reddit.com", "twitter.com"];
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete" || !tab.url) return;
-
-  console.log(`[Mojo] tab updated -> ${tab.url}`);
   checkAndAlert(tab);
 });
 
 function checkAndAlert(tab) {
+  const HOSTNAME = new URL(tab.url).hostname;
+  console.log(HOSTNAME);
   // TODO (your turn):
   // 1. Pull the hostname out of tab.url — the `URL` constructor gives you
   //    `.hostname` without you having to parse the string by hand.
