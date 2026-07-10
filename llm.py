@@ -1,6 +1,7 @@
 import json
+import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from groq import Groq
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -8,6 +9,10 @@ from PyQt6.QtCore import QObject, pyqtSignal
 load_dotenv()
 
 LOG_PATH = "decisions.log"
+
+# Repeat-offense escalation thresholds — see check_repeat_offense().
+REPEAT_VISIT_WINDOW = timedelta(hours=1)
+REPEAT_VISIT_LIMIT = 2  # 3rd+ attempt on the same site within the window triggers
 
 client = Groq()
 
@@ -51,6 +56,83 @@ def get_recent_reasons(site: str, limit: int = 3) -> list[dict]:
     return matches[-limit:]
 
 
+def _load_site_history(site: str) -> list[dict]:
+    """Every logged entry (full fields, including timestamp) for this site,
+    oldest first. Used by check_repeat_offense, which needs more than
+    get_recent_reasons' trimmed reason/decision pairs."""
+    try:
+        lines = open(LOG_PATH).read().splitlines()
+    except FileNotFoundError:
+        return []
+
+    entries = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("site") == site:
+            entries.append(entry)
+    return entries
+
+
+def _normalize(text: str) -> str:
+    """Lowercase and strip punctuation so trivially different phrasings of
+    the same excuse ("Bored!" vs "bored") compare equal. This is a simple
+    deterministic check, not semantic understanding — a paraphrased excuse
+    ("nothing else to do") won't be caught. That's the accepted tradeoff for
+    catching repeats without an extra LLM call."""
+    return re.sub(r"[^a-z0-9 ]", "", (text or "").lower()).strip()
+
+
+def check_repeat_offense(site: str, reason: str) -> dict | None:
+    """
+    Deterministic, LLM-free escalation check, run before evaluate_reason
+    calls the API at all. Returns a forced "deny" decision dict if this
+    counts as a repeat offense, or None if normal evaluation should proceed.
+
+    Triggers on either:
+    - This is the 3rd+ attempt (allowed or denied both count) on this site
+      within REPEAT_VISIT_WINDOW, or
+    - The normalized reason matches a reason already given for this site,
+      at any point in the past.
+    """
+    history = _load_site_history(site)
+    now = datetime.now(timezone.utc)
+
+    recent = []
+    for entry in history:
+        try:
+            ts = datetime.fromisoformat(entry["timestamp"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if now - ts <= REPEAT_VISIT_WINDOW:
+            recent.append(entry)
+
+    if len(recent) >= REPEAT_VISIT_LIMIT:
+        return {
+            "decision": "deny",
+            "duration": 0,
+            "response": (
+                f"This is attempt #{len(recent) + 1} on {site} in the last hour. "
+                "I already told you where I stand — the answer hasn't changed."
+            ),
+        }
+
+    normalized_reason = _normalize(reason)
+    if normalized_reason and any(_normalize(e.get("reason")) == normalized_reason for e in history):
+        return {
+            "decision": "deny",
+            "duration": 0,
+            "response": (
+                f"\"{reason}\" — you already used that exact excuse for {site} before. "
+                "Recycling a lie doesn't make it true. Denied."
+            ),
+        }
+
+    return None
+
+
 def evaluate_reason(site: str, reason: str) -> dict:
     """
     YOUR TURN.
@@ -84,21 +166,30 @@ def evaluate_reason(site: str, reason: str) -> dict:
     this is a repeat excuse. Let the model do the summarizing/pattern-
     spotting; your job is just handing it the raw history.
     """
+    forced = check_repeat_offense(site, reason)
+    if forced is not None:
+        return forced
+
     try:
         system_prompt = (
             "You are Mojo, a savage, cynical, and hyper-strict accountability partner. "
             "The user is a chronic procrastinator trying to sneak onto a distracting website. "
             "Your default stance is absolute suspicion. You MUST assume every reason is a lie or a cop-out.\n\n"
-            "Respond with ONLY a JSON object containing exactly these two keys in this exact order:\n\n"
+            "Respond with ONLY a JSON object containing exactly these three keys in this exact order:\n\n"
             "1. \"response\": 1-2 sentences spoken directly to the user. Be direct, call out their weakness, "
             "and explain why their excuse isn't good enough. Do not be polite.\n"
             "2. \"decision\": exactly one of \"allow\" or \"deny\". Eliminate 'maybe' entirely.\n"
             "   - \"deny\": The default choice. Use this if the reason is vague (e.g., 'research', 'checking something', "
             "'just quick'), emotional ('I'm tired', 'bored'), or lacks a concrete, immediate work-related sub-task.\n"
             "   - \"allow\": ONLY use this if they provide an undeniable, highly specific business/academic emergency "
-            "or a tightly defined task that absolutely mandates this exact website (e.g., 'Need to grab the API documentation link posted on the team Twitter handle').\n\n"
+            "or a tightly defined task that absolutely mandates this exact website (e.g., 'Need to grab the API documentation link posted on the team Twitter handle').\n"
+            "3. \"duration\": an integer number of minutes. If \"decision\" is \"deny\", this MUST be 0. If "
+            "\"decision\" is \"allow\", pick a tight, realistic number of minutes for the specific task described "
+            "(e.g. 5 for grabbing a single link, 15 for a focused lookup) — never more than 30, and never "
+            "open-ended.\n\n"
             "Example of the exact shape expected:\n"
-            "{\"response\": \"'Quick break' is how your 2-hour dopamine spirals always start. Access denied. Get back to work.\", \"decision\": \"deny\"}"
+            "{\"response\": \"'Quick break' is how your 2-hour dopamine spirals always start. Access denied. "
+            "Get back to work.\", \"decision\": \"deny\", \"duration\": 0}"
         )
         history = get_recent_reasons(site)
         if history:
@@ -125,11 +216,24 @@ def evaluate_reason(site: str, reason: str) -> dict:
 
         # Assuming the model's response is in the expected JSON format.
         decision = json.loads(response.choices[0].message.content)
+
+        # Don't trust the model's duration blindly — clamp to a sane range
+        # rather than letting a malformed/missing value grant an unbounded
+        # or negative allowance.
+        try:
+            decision["duration"] = max(0, min(30, int(decision.get("duration", 0))))
+        except (TypeError, ValueError):
+            decision["duration"] = 0
+
         return decision
 
     except Exception as e:
         print(f"[Mojo] Error occurred while evaluating reason for {site}: {e}")
-        return {"decision": "allow", "response": "Unable to evaluate — defaulting to allow."}
+        return {
+            "decision": "allow",
+            "duration": 5,
+            "response": "Unable to evaluate — defaulting to a short allow.",
+        }
 
 
 def evaluate_async(site: str, reason: str, bridge: EvaluationBridge):
@@ -147,6 +251,7 @@ def log_decision(site: str, reason: str, decision: dict):
         "reason": reason,
         "decision": decision.get("decision"),
         "response": decision.get("response"),
+        "duration": decision.get("duration"),
     }
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")

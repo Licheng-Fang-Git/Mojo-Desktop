@@ -8,7 +8,7 @@ const DECISION_URL = "http://localhost:8000/decision";
 const POLL_PERIOD_MINUTES = 2 / 60; // ~2 seconds
 
 // Sites we consider distracting. Add/remove as needed.
-const BLACKLIST = ["youtube.com", "reddit.com", "twitter.com"];
+const BLACKLIST = ["youtube.com", "reddit.com", "x.com"];
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.status !== "complete" || !tab.url) return;
@@ -40,9 +40,13 @@ function checkAndAlert(tab) {
 }
 
 function startPolling(tabId) {
+    console.log(`[Mojo] Alert sent for tab ${tabId}, starting poll alarm.`);
     // periodInMinutes also covers the first fire — no separate delayInMinutes
     // needed for a short interval like this.
     chrome.alarms.create(pollAlarmName(tabId), { periodInMinutes: POLL_PERIOD_MINUTES });
+    chrome.alarms.get(pollAlarmName(tabId), (alarm) => {
+        console.log(`[Mojo] Alarm registered:`, alarm);
+    });
 }
 
 function pollAlarmName(tabId) {
@@ -53,16 +57,20 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     if (!alarm.name.startsWith("mojo-poll-")) return;
 
     const tabId = parseInt(alarm.name.slice("mojo-poll-".length), 10);
+    console.log(`[Mojo] Alarm fired, polling for tab ${tabId}...`);
 
     fetch(`${DECISION_URL}?tab_id=${tabId}`)
         .then((res) => res.json())
         .then(({ action }) => {
+            console.log(`[Mojo] Poll response for tab ${tabId}:`, action);
             if (!action) return; // still waiting on the user, keep polling
 
             chrome.alarms.clear(alarm.name);
             if (action.type === "close") {
+                console.log(`[Mojo] Closing tab ${tabId}.`);
                 chrome.tabs.remove(tabId);
             } else if (action.type === "open" && action.url) {
+                console.log(`[Mojo] Redirecting tab ${tabId} to ${action.url}.`);
                 chrome.tabs.update(tabId, { url: action.url });
             }
         })
