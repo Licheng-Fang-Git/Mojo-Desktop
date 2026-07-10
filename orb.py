@@ -231,6 +231,7 @@ class ChatPanel(QWidget):
             verdict = decision.get("decision")
             action = {"type": "close"} if verdict == "deny" else {"type": "none"}
             self.orb.bridge.record_action(self.current_tab_id, action)
+            QTimer.singleShot(3000, self.hide)
 
     def _close_tab(self):
         if self.current_tab_id is None:
@@ -238,6 +239,7 @@ class ChatPanel(QWidget):
             return
         self._add_bubble("Closing the tab.", sender="ai")
         self.orb.bridge.record_action(self.current_tab_id, {"type": "close"})
+        QTimer.singleShot(1000, self.hide)
 
     def _open_url(self, url, label):
         if self.current_tab_id is None:
@@ -245,6 +247,7 @@ class ChatPanel(QWidget):
             return
         self._add_bubble(f"Opening {label} instead.", sender="ai")
         self.orb.bridge.record_action(self.current_tab_id, {"type": "open", "url": url})
+        QTimer.singleShot(1000, self.hide)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -262,8 +265,9 @@ class Orb(QWidget):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
+            | Qt.WindowType.Window
         )
+        
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
 
@@ -279,7 +283,7 @@ class Orb(QWidget):
         self.chat_panel = ChatPanel(self)
 
         self.resize(COLLAPSED_SIZE)
-        self.move(1800, 100)
+        self.move(100, 100)
 
         self.bridge = AlertBridge()
         self.bridge.alert_received.connect(self._on_alert)
@@ -302,6 +306,8 @@ class Orb(QWidget):
         self.chat_panel.show_alert(site, message, tab_id)
         self._position_chat_panel()
         self.chat_panel.show()
+        self.chat_panel.raise_()          
+        self.chat_panel.activateWindow()
 
     def closeEvent(self, event):
         self.server.shutdown()
