@@ -105,6 +105,15 @@ class ChatPanel(QWidget):
         self.evaluation_bridge = EvaluationBridge()
         self.evaluation_bridge.evaluation_done.connect(self._on_evaluation_done)
 
+        self.countdown_label = QLabel("")
+        self.countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.countdown_label.setStyleSheet(
+            "color: rgb(120, 230, 160); background: rgba(90, 220, 140, 35); "
+            "border: 1px solid rgba(90, 220, 140, 120); border-radius: 6px; "
+            "padding: 4px; font-size: 12px; font-weight: bold;"
+        )
+        self.countdown_label.hide()  # only shown while an allowance timer is running
+
         self.message_label = QLabel("Open Tabs to see the AI's message here.")
         self.message_label.setWordWrap(True)
         self.message_label.setStyleSheet("color: white; background: transparent; font-size: 13px;")
@@ -113,11 +122,6 @@ class ChatPanel(QWidget):
         self.reason_label.setWordWrap(True)
         self.reason_label.setStyleSheet(
             "color: rgba(255,255,255,150); background: transparent; font-size: 11px; font-style: italic;"
-        )
-
-        self.countdown_label = QLabel("")
-        self.countdown_label.setStyleSheet(
-            "color: rgb(120, 230, 160); background: transparent; font-size: 11px; font-weight: bold;"
         )
 
         self.input_line = QLineEdit()
@@ -151,9 +155,9 @@ class ChatPanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
+        layout.addWidget(self.countdown_label)
         layout.addWidget(self.message_label)
         layout.addWidget(self.reason_label)
-        layout.addWidget(self.countdown_label)
         layout.addStretch()
         layout.addLayout(button_row)
         layout.addWidget(self.input_line)
@@ -168,10 +172,11 @@ class ChatPanel(QWidget):
     def refresh_countdown(self):
         seconds = self.orb.countdown_seconds_for(self.current_tab_id)
         if seconds is None:
-            self.countdown_label.setText("")
+            self.countdown_label.hide()
         else:
             minutes, secs = divmod(max(0, seconds), 60)
-            self.countdown_label.setText(f"Time remaining: {minutes}:{secs:02d}")
+            self.countdown_label.setText(f"⏱ {minutes}:{secs:02d} remaining")
+            self.countdown_label.show()
 
     def _on_submit(self):
         reason = self.input_line.text().strip()
